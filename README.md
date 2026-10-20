@@ -129,7 +129,7 @@ python server.py import ... --overwrite   # 覆盖同名数据集（会清掉它
   "images": { "A": "images/b1a.png", "B": "images/b1b.png" },
   "criteria": [{ "id": "q1" }, { "id": "q2" }],
   "scores": { "A": { "q1": 7, "q2": 9 }, "B": { "q1": 3, "q2": 6 } },
-  "note": "评审理由：……",
+  "note": "AI 理由：……",
   "meta": { "model_A": "M-A", "model_B": "M-B" }
 }
 ```
