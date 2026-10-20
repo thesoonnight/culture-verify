@@ -1,0 +1,5 @@
+type,id,prompt,image,images_a,images_b,axis,lang,item_id,item_label,score,rationale,criterion_id,criterion_label,score_a,score_b,note
+pointwise,C01,唐代仕女，齐胸襦裙，长安春日,../prototype/mock/a1.png,,,服饰形制,中文,d1,文化元素准确性,1,高腰系带与披帛可辨,,,,
+pointwise,C01,唐代仕女，齐胸襦裙，长安春日,../prototype/mock/a1.png,,,服饰形制,中文,d2,无西方化错配,0,领口出现西式蕾丝,,,,
+pairwise,C02,敦煌莫高窟飞天，矿物颜料,,../prototype/mock/b1a.png,../prototype/mock/b1b.png,壁画 / 宗教,中文,,,,,q1,画面质感,7,3,
+pairwise,C02,敦煌莫高窟飞天，矿物颜料,,../prototype/mock/b1a.png,../prototype/mock/b1b.png,壁画 / 宗教,中文,,,,,q2,细节真实度,9,6,

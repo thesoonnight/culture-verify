@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>文化核验台</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">文</span>
+      <div class="brand-text">
+        <strong>文化核验台</strong>
+        <span id="brandSub">Culture Verify · v0.2</span>
+      </div>
+    </div>
+
+    <div class="dataset-picker" id="datasetPicker">
+      <span class="picker-label">数据集</span>
+      <select id="datasetSelect" aria-label="数据集"></select>
+    </div>
+
+    <nav class="tabs" id="tabs">
+      <button class="tab" data-mode="pointwise">
+        <span class="tab-ico">▣</span>单图核验 <em id="tabCountA">0 / 0</em>
+      </button>
+      <button class="tab" data-mode="pairwise">
+        <span class="tab-ico">◫</span>双图对比 <em id="tabCountB">0 / 0</em>
+      </button>
+    </nav>
+
+    <div class="top-actions">
+      <button class="annotator-chip" id="annotatorChip" data-act="settings" title="标注员 / 设置">local</button>
+      <span class="save-state" id="saveState"><i></i><em>本机</em></span>
+      <span class="counter" id="counter">1 / 1</span>
+      <button class="btn ghost" data-act="import">导入</button>
+      <button class="btn ghost" data-act="export">导出</button>
+      <button class="btn ghost" data-act="summary">结果</button>
+      <button class="btn ghost" data-act="settings"><span class="ico">⚙</span>维度</button>
+      <button class="btn ghost icon-only" data-act="help" title="快捷键与格式">?</button>
+    </div>
+  </header>
+
+  <div class="progress-rail"><span id="progressFill"></span></div>
+
+  <main class="view" id="view"></main>
+  <div class="actionbar" id="actionbar"></div>
+
+  <div class="scrim" id="scrim" hidden></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+  <div class="overlay" id="overlay" hidden></div>
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="js/config.js"></script>
+  <script src="js/utils.js"></script>
+  <script src="js/demo.js"></script>
+  <script src="js/model.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/views.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
