@@ -13,7 +13,7 @@ evaluator 先出分，人只做 ✓ / ✗；系统负责存标注、算一致率
 - **导出**：人工评分 CSV、一致性报告 CSV、原始标注 JSONL、汇总 JSON。
 - **断点续标**：服务器模式实时保存；直接打开 HTML 时退回本地演示模式（localStorage）。
 - **维度改名**：页面里改、改 `config.json`、或 `window.CV.setLabels({...})`，会写回数据集。
-- **可维护**：后端 `cv/` 四个模块，前端 `js/` 八个文件；25 个 Python 测试 + 29 个浏览器测试。
+- **可维护**：后端 `cv/` 四个模块，前端 `js/` 八个文件；25 个 Python 测试 + 31 个浏览器测试。
 
 ## 快速开始
 
@@ -272,7 +272,7 @@ python -m unittest discover -s tests -v      # 25 项：导入 / 统计 / API
 ```powershell
 python server.py serve --port 8766
 chrome --headless=new --remote-debugging-port=9334 http://127.0.0.1:8766/
-node prototype/tools/test-ui.mjs             # 29 项：保存/刷新/改名/双图/汇总/本地模式
+node prototype/tools/test-ui.mjs             # 31 项：保存/刷新/改名/双图/汇总/导出筛选/本地模式
 ```
 
 ## 已知限制 / 下一步
