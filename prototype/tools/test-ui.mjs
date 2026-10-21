@@ -166,6 +166,38 @@ await js(`window.confirm = () => true; document.querySelector('[data-act="reset"
 await sleep(400);
 check('local reset clears storage', (await js(`localStorage.getItem('culture-verify-v02')`)) === null);
 
+/* --------------------------------------------------- 0.2.1 修复项回归 */
+await nav(`${BASE}/?annotator=qa&dataset=demo`);
+check('CV.setLabels 真的存在（README 契约）', (await js(`typeof window.CV.setLabels`)) === 'function');
+check(
+  'CV.getConfig 能读出维度名',
+  (await js(`(window.CV.getConfig().labels || {}).d1 || ''`)) !== ''
+);
+
+await click('.tab[data-mode="pairwise"]');
+await js(`(() => {
+  const st = window.CV.store.state;
+  const index = st.tasks.filter((t) => t.mode === 'pairwise').findIndex((t) => t.id === 'B03');
+  st.idx = index < 0 ? 0 : index;
+  window.CV.app.render();
+})()`);
+const shownBefore = await js(`window.CV.store.ensureAnn(window.CV.store.currentTask()).shown_as`);
+await js(`(() => { window.confirm = () => true; document.querySelector('[data-act="swap"]').click(); })()`);
+await sleep(600);
+const shownAfter = await js(`window.CV.store.ensureAnn(window.CV.store.currentTask()).shown_as`);
+check('交换左右会同时改写 shown_as', shownBefore !== shownAfter, `${shownBefore} → ${shownAfter}`);
+const shownStored = await js(
+  `fetch('/api/datasets/demo/annotations?annotator=qa').then((r) => r.json()).then((d) => (d.annotations.find((a) => a.task_id === 'B03') || {}).shown_as)`
+);
+check('交换后的顺序落到了服务器', shownStored === shownAfter, String(shownStored));
+
+const deletedCount = await js(`(async () => {
+  await fetch('/api/datasets/demo/annotations?annotator=qa&task_id=B03', { method: 'DELETE' });
+  const rest = await fetch('/api/datasets/demo/annotations?annotator=qa').then((r) => r.json());
+  return rest.annotations.filter((a) => a.task_id === 'B03').length;
+})()`);
+check('DELETE 能删掉单条标注', deletedCount === 0, String(deletedCount));
+
 check('no uncaught page exceptions', errors.length === 0, errors.join(' | '));
 
 ws.close();
