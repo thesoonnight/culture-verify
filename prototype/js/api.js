@@ -80,6 +80,20 @@ window.CV = window.CV || {};
       return data.config || {};
     },
 
+    async deleteAnnotations(name, { annotator, taskId } = {}) {
+      const params = new URLSearchParams();
+      if (annotator) params.set('annotator', annotator);
+      if (taskId) params.set('task_id', taskId);
+      const suffix = params.toString() ? `?${params.toString()}` : '';
+      return requestJSON(`/api/datasets/${encodeURIComponent(name)}/annotations${suffix}`, {
+        method: 'DELETE',
+      });
+    },
+
+    async deleteDataset(name) {
+      return requestJSON(`/api/datasets/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    },
+
     async stats(name, annotator) {
       const suffix = annotator ? `?annotator=${encodeURIComponent(annotator)}` : '';
       return requestJSON(`/api/datasets/${encodeURIComponent(name)}/stats${suffix}`);

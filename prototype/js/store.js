@@ -196,9 +196,11 @@ window.CV = window.CV || {};
 
   function finish(task, status) {
     const ann = ensureAnn(task);
+    // 耗时只记第一次：回看已完成的题再按「下一题」不该把 8 万多毫秒覆盖成 1 秒
+    const firstFinish = ann.duration_ms == null;
     ann.status = status;
-    ann.finished_at = nowISO();
-    ann.duration_ms = Date.now() - state.viewStart;
+    ann.finished_at = ann.finished_at || nowISO();
+    if (firstFinish) ann.duration_ms = Date.now() - state.viewStart;
     ann.updated_at = nowISO();
     persist(ann);
   }
@@ -269,7 +271,9 @@ window.CV = window.CV || {};
   function skip() {
     const task = currentTask();
     if (!task) return;
-    finish(task, 'skipped');
+    // 标了「待议」的题按 S 跳过时别把标记弄丢
+    const ann = ensureAnn(task);
+    finish(task, ann.status === 'flagged' ? 'flagged' : 'skipped');
     state.idx += 1;
   }
 
@@ -281,6 +285,31 @@ window.CV = window.CV || {};
     ann.updated_at = nowISO();
     persist(ann);
     return ann.status;
+  }
+
+  /* 交换左右：显示顺序变了，落库的 shown_as 必须跟着变（否则位置偏差对不上）。
+     已经投过票的题先清空判定，避免同一行数据对应两种显示顺序。 */
+  function swapOrder() {
+    const task = currentTask();
+    if (!task || task.mode !== 'pairwise') return { ok: false, cleared: 0 };
+    const ann = ensureAnn(task);
+    const cleared = Object.keys(ann.verdicts || {}).length;
+    ann.verdicts = {};
+    ann.shown_as = ann.shown_as === 'AB' ? 'BA' : 'AB';
+    ann.updated_at = nowISO();
+    persist(ann);
+    return { ok: true, cleared };
+  }
+
+  async function deleteMyAnnotations() {
+    if (state.source !== 'server' || !state.dataset.name) return 0;
+    const result = await CV.api.deleteAnnotations(state.dataset.name, { annotator: state.annotator });
+    state.annotations = {};
+    state.undo = [];
+    state.idx = 0;
+    state.showSummary = false;
+    state.summary = null;
+    return result.deleted || 0;
   }
 
   function undo() {
@@ -494,7 +523,7 @@ window.CV = window.CV || {};
       return `${stem}-annotations.jsonl`;
     }
     const payload = {
-      schema: 'culture-verify/summary@0.2',
+      schema: 'culture-verify/summary@0.2.1',
       exported_at: nowISO(),
       dataset: state.dataset,
       annotator: annotator || null,
@@ -545,6 +574,8 @@ window.CV = window.CV || {};
     prev,
     skip,
     flag,
+    swapOrder,
+    deleteMyAnnotations,
     undo,
     setMode,
     boot,

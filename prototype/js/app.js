@@ -525,6 +525,26 @@ window.CV = window.CV || {};
     toast('已清空本地数据');
   }
 
+  async function resetAnnotations() {
+    const name = state.dataset.name;
+    if (!name) return;
+    if (
+      !window.confirm(
+        `清空标注员「${state.annotator}」在「${name}」上的全部标注？\n只删你自己的，别人的不受影响，但删了不可恢复。`
+      )
+    ) {
+      return;
+    }
+    try {
+      const deleted = await store.deleteMyAnnotations();
+      await closeSettings(false);
+      render();
+      toast(`已清空 ${deleted} 条标注`);
+    } catch (err) {
+      toast(`清空失败：${err.message}`);
+    }
+  }
+
   function jumpTask(taskId) {
     const task = state.tasks.find((item) => item.id === taskId);
     if (!task) return;
@@ -604,12 +624,20 @@ window.CV = window.CV || {};
       }
       case 'swap': {
         const task = store.currentTask();
-        if (!task) break;
+        if (!task || task.mode !== 'pairwise') break;
         const ann = store.ensureAnn(task);
-        ann.shown_as = ann.shown_as === 'AB' ? 'BA' : 'AB';
-        store.persist(ann);
+        const voted = Object.keys(ann.verdicts || {}).length;
+        if (
+          voted &&
+          !window.confirm(
+            `本题已经投了 ${voted} 项判定。\n交换左右会清空这些判定（否则记录里的显示顺序会对不上），继续？`
+          )
+        ) {
+          break;
+        }
+        const result = store.swapOrder();
         render();
-        toast('已交换左右显示（不影响数据）');
+        toast(result.cleared ? '已交换左右，本题判定已清空' : '已交换左右');
         break;
       }
       case 'do-import':
@@ -638,6 +666,9 @@ window.CV = window.CV || {};
         break;
       case 'reset':
         resetLocal();
+        break;
+      case 'reset-annotations':
+        resetAnnotations();
         break;
       default:
         break;
@@ -932,4 +963,24 @@ window.CV = window.CV || {};
   start();
 
   window.CV.app = { render, openSummary, openSettings, openImport, openExport, toast };
+
+  /* 控制台接口（README 里写过、但之前一直没实现）：改完顺手重绘一次。 */
+  window.CV.getConfig = () => store.state.config;
+  window.CV.getAnnotations = () => Object.values(store.state.annotations);
+  window.CV.setLabels = async (labels, questions) => {
+    await store.setLabels(labels || {}, questions || {});
+    render();
+    return store.state.config;
+  };
+  window.CV.setQuestions = async (questions) => {
+    await store.setLabels({}, questions || {});
+    render();
+    return store.state.config;
+  };
+  window.CV.deleteAnnotations = async ({ annotator = store.state.annotator, taskId } = {}) => {
+    const result = await CV.api.deleteAnnotations(store.state.dataset.name, { annotator, taskId });
+    await store.setAnnotator(store.state.annotator);
+    render();
+    return result;
+  };
 })(window.CV);

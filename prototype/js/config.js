@@ -43,7 +43,7 @@ window.CV = window.CV || {};
   }
 
   CV.config = {
-    VERSION: '0.2.0',
+    VERSION: '0.2.1',
     LS_KEY: 'culture-verify-v02',
     LS_ANNOTATOR: 'culture-verify-annotator',
     DEFAULT_ANNOTATOR: 'local',

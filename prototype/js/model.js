@@ -95,11 +95,18 @@ window.CV = window.CV || {};
     return a > b ? 'A' : 'B';
   }
 
+  /* 空值判断：0 / false 是"有值"，不能被 || 吞掉 */
+  const blank = (value) => (value === undefined || value === null || value === '' ? '' : value);
+
+  /* 计入 corrected 的修正值：'?'（不确定）是"不知道真值"，不算一次修正 */
+  const COUNTED_CORRECTIONS = ['0', '1', 'A', 'B', 'tie', 'gap'];
+  const isCountedCorrection = (value) =>
+    COUNTED_CORRECTIONS.includes(value === undefined || value === null ? '' : String(value));
+
   function pointTruth(item, verdict) {
     if (!verdict) return null;
-    if (verdict.correction === '0' || verdict.correction === '1') {
-      return Number(verdict.correction);
-    }
+    const correction = verdict.correction == null ? null : String(verdict.correction);
+    if (correction === '0' || correction === '1') return Number(correction);
     if (verdict.agree === true) return Number(item.score);
     return null;
   }
@@ -222,7 +229,7 @@ window.CV = window.CV || {};
             axisStats.disagree += 1;
             modelStats.disagree += 1;
             overall.disagree += 1;
-            if (verdict.correction) {
+            if (isCountedCorrection(verdict.correction)) {
               [stats, overall, axisStats, modelStats].forEach((bucket) => {
                 bucket.corrected += 1;
               });
@@ -275,7 +282,7 @@ window.CV = window.CV || {};
             stats.disagree += 1;
             axisStats.disagree += 1;
             overall.disagree += 1;
-            if (verdict.correction) {
+            if (isCountedCorrection(verdict.correction)) {
               [stats, overall, axisStats].forEach((bucket) => {
                 bucket.corrected += 1;
               });
@@ -338,6 +345,7 @@ window.CV = window.CV || {};
     }
     const totalCommon = pairStats.reduce((sum, item) => sum + item.n, 0);
     const kappas = pairStats.filter((item) => item.kappa != null);
+    const kappaItems = kappas.reduce((sum, item) => sum + item.n, 0);
     const interSummary = {
       annotators: annotatorList,
       n_items: inter.size,
@@ -345,9 +353,10 @@ window.CV = window.CV || {};
       percent_agreement: totalCommon
         ? pairStats.reduce((sum, item) => sum + item.n * item.po, 0) / totalCommon
         : null,
+      // 全判「同意」时 pe=1，κ 无定义：这类配对只进一致率，单独报出 κ 实际用到的比较数
+      n_kappa_comparisons: kappaItems,
       kappa: kappas.length
-        ? kappas.reduce((sum, item) => sum + item.n * item.kappa, 0) /
-          kappas.reduce((sum, item) => sum + item.n, 0)
+        ? kappas.reduce((sum, item) => sum + item.n * item.kappa, 0) / kappaItems
         : null,
       n_pairs: pairStats.length,
     };
@@ -418,6 +427,9 @@ window.CV = window.CV || {};
     'model_a',
     'model_b',
     'human_verdict',
+    'prompt',
+    'shown_as',
+    'region',
   ];
 
   function verdictRows(tasks, annotations, config) {
@@ -438,12 +450,15 @@ window.CV = window.CV || {};
         annotator: ann.annotator || '',
         axis: task.axis || '',
         lang: task.lang || '',
-        overall: ann.overall || '',
-        note: ann.note || '',
-        duration_ms: ann.duration_ms || '',
+        overall: blank(ann.overall),
+        note: blank(ann.note),
+        duration_ms: blank(ann.duration_ms),
         finished_at: finished,
         status,
-        started_at: ann.started_at || '',
+        started_at: blank(ann.started_at),
+        prompt: task.prompt || '',
+        shown_as: blank(ann.shown_as),
+        region: task.region || '',
       };
       if (task.mode === 'pointwise') {
         (task.items || []).forEach((item) => {
@@ -460,7 +475,7 @@ window.CV = window.CV || {};
             model_score_b: '',
             model_pref: '',
             human_agree: verdict.agree ? 1 : 0,
-            human_correction: verdict.correction || '',
+            human_correction: blank(verdict.correction),
             human_truth: pointTruth(item, verdict) == null ? '' : pointTruth(item, verdict),
             human_verdict: verdict.agree ? '同意' : '不同意',
           });
@@ -483,7 +498,7 @@ window.CV = window.CV || {};
             model_score_b: task.scores.B[crit.id],
             model_pref: pref,
             human_agree: verdict.agree ? 1 : 0,
-            human_correction: verdict.correction || '',
+            human_correction: blank(verdict.correction),
             human_truth: pairTruth(pref, verdict) || '',
             human_verdict: verdict.agree ? '同意' : '不同意',
           });
@@ -508,6 +523,7 @@ window.CV = window.CV || {};
     'verified_pass_rate',
     'flipped',
     'kappa',
+    'kappa_n',
     'n_pairs',
     'n_items',
     'avg_duration_ms',
@@ -524,6 +540,7 @@ window.CV = window.CV || {};
     };
     add('overall', 'all', '全部判定', summary.overall, {
       kappa: (summary.inter_annotator || {}).kappa ?? '',
+      kappa_n: (summary.inter_annotator || {}).n_kappa_comparisons ?? '',
     });
     (summary.dimensions || []).forEach((item) =>
       add('evaluator_vs_human', item.id, item.label, item)
@@ -539,6 +556,7 @@ window.CV = window.CV || {};
       n: inter.n_comparisons ?? '',
       agreement_rate: inter.percent_agreement ?? '',
       kappa: inter.kappa ?? '',
+      kappa_n: inter.n_kappa_comparisons ?? '',
       n_pairs: inter.n_pairs ?? '',
       n_items: inter.n_items ?? '',
     });

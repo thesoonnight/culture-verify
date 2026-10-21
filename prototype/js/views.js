@@ -229,7 +229,7 @@ window.CV = window.CV || {};
         </div>
         <div class="card score-card">
           <div class="score-head">
-            <div><strong>画面质感对比</strong><span class="muted">核对 AI 的分数与结论</span></div>
+            <div><strong>双图评分对比</strong><span class="muted">核对 AI 的分数与结论</span></div>
             <span class="chip ghost">分数 0–10</span>
           </div>
           <table class="score-table">
@@ -374,7 +374,9 @@ window.CV = window.CV || {};
         } · 可导出人工评分与一致性报告</p>
       </div>
       <div class="stat-grid">
-        <div class="stat-card"><div class="label">已核验题目</div><div class="big">${annotatedTasks}<small> / ${state.tasks.length}</small></div></div>
+        <div class="stat-card"><div class="label">已核验题目${
+          state.source === 'server' ? '（全站）' : ''
+        }</div><div class="big">${annotatedTasks}<small> / ${state.tasks.length}</small></div></div>
         <div class="stat-card"><div class="label">判定总数</div><div class="big">${overall.n || 0}<small> 项</small></div></div>
         <div class="stat-card"><div class="label">AI一致率</div><div class="big">${fmtPct(overall.agreement_rate)}</div></div>
         <div class="stat-card"><div class="label">平均每题</div><div class="big">${fmtSec(overall.avg_duration_ms)}</div></div>
@@ -498,6 +500,15 @@ window.CV = window.CV || {};
       ${toggle('autoNext', '答完自动跳下一题', '所有项都打勾/打叉后自动前进')}
       ${toggle('requireCorrection', '✗ 时必须填「实际应为」', '用于产出修正后的 verified 分数')}
       <p class="field-hint" style="margin-top:10px">维度名称会写回数据集配置（服务器模式）或本地存储。</p>
+      ${
+        state.source === 'server' && state.dataset.name
+          ? `<div class="section-label" style="margin-top:22px">危险操作</div>
+             <button class="btn ghost warn" data-act="reset-annotations">清空我在「${esc(
+               state.dataset.name
+             )}」的标注</button>
+             <p class="field-hint">只删当前标注员 <b>${esc(state.annotator)}</b> 的进度，别人的不受影响。</p>`
+          : ''
+      }
     </div>
     <div class="drawer-foot">
       <button class="btn ghost" data-act="restore-labels">恢复默认名称</button>
@@ -552,6 +563,7 @@ window.CV = window.CV || {};
                <small>根目录：tasks.jsonl / tasks.csv + images/ + 可选 config.json</small>
              </div>
              <label class="checkline"><input type="checkbox" id="importOverwrite"> 覆盖同名数据集</label>
+             <small class="field-hint">覆盖会<b>删掉这个数据集的全部标注</b>（导之前建议先导出一份 annotations.jsonl）。</small>
              <div class="import-status" id="importStatus"></div>
              <div class="modal-foot">
                <button class="btn ghost" data-act="close-overlay">取消</button>
@@ -562,7 +574,7 @@ window.CV = window.CV || {};
              </div>
              <pre class="code-block">cd culture-verify
 python server.py serve --port 8765 --open</pre>
-             <p class="sub">然后访问 <code>http://127.0.0.1:8765</code>，右上角「导入数据」会变成可用状态。</p>
+             <p class="sub">然后访问 <code>http://127.0.0.1:8765</code>，右上角「导入」会变成可用状态。</p>
              <div class="modal-foot"><button class="btn primary" data-act="close-overlay">知道了</button></div>`
       }
     </div>`;
