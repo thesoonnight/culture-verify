@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from itertools import combinations
 from typing import Any, Iterable
 
+from .validation import COUNTED_CORRECTIONS
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -73,17 +75,19 @@ def _model_pref(task: dict, cid: str) -> str:
 
 
 def _point_truth(item: dict, verdict: dict) -> int | None:
+    if not isinstance(verdict, dict):
+        return None
     correction = verdict.get("correction")
     if correction in ("0", "1", 0, 1):
         return int(correction)
-    if correction is None and verdict.get("agree") is True:
-        return int(item["score"])
     if verdict.get("agree") is True:
         return int(item["score"])
     return None
 
 
 def _pair_truth(pref: str, verdict: dict) -> str | None:
+    if not isinstance(verdict, dict):
+        return None
     correction = verdict.get("correction")
     if verdict.get("agree") is True:
         return pref
@@ -131,11 +135,15 @@ def analyze(tasks: list[dict], annotations: list[dict], config: dict | None = No
     inter_labels: dict[tuple[str, str], dict[str, int]] = {}
 
     for ann in annotations:
+        if not isinstance(ann, dict):
+            continue  # 手工改过库 / 外部工具写坏的行，不能让整份报告 500
         task = task_by_id.get(ann.get("task_id"))
         if not task:
             continue
         annotator = ann.get("annotator") or "unknown"
-        verdicts = ann.get("verdicts") or {}
+        verdicts = ann.get("verdicts")
+        if not isinstance(verdicts, dict):
+            verdicts = {}
         duration = ann.get("duration_ms")
         annot_stats = by_annotator.setdefault(annotator, _empty_stats())
         if isinstance(duration, (int, float)) and duration >= 0:
@@ -152,7 +160,7 @@ def analyze(tasks: list[dict], annotations: list[dict], config: dict | None = No
             for item in task.get("items", []):
                 did = item["dim"]
                 verdict = verdicts.get(did)
-                if not verdict or not isinstance(verdict.get("agree"), bool):
+                if not isinstance(verdict, dict) or not isinstance(verdict.get("agree"), bool):
                     continue
                 stats = dim_stats.setdefault(did, _empty_stats())
                 for bucket in (stats, overall, annot_stats, axis_stats, model_stats):
@@ -165,7 +173,7 @@ def analyze(tasks: list[dict], annotations: list[dict], config: dict | None = No
                     axis_stats["disagree"] += 1
                     model_stats["disagree"] += 1
                     overall["disagree"] += 1
-                    if verdict.get("correction") not in (None, ""):
+                    if verdict.get("correction") in COUNTED_CORRECTIONS:
                         for bucket in (stats, annot_stats, overall, axis_stats, model_stats):
                             bucket["corrected"] += 1
                 stats["raw_sum"] += item["score"]
@@ -183,7 +191,7 @@ def analyze(tasks: list[dict], annotations: list[dict], config: dict | None = No
             for crit in task.get("criteria", []):
                 cid = crit["id"]
                 verdict = verdicts.get(cid)
-                if not verdict or not isinstance(verdict.get("agree"), bool):
+                if not isinstance(verdict, dict) or not isinstance(verdict.get("agree"), bool):
                     continue
                 pref = _model_pref(task, cid)
                 stats = crit_stats.setdefault(cid, _empty_stats())
@@ -197,7 +205,7 @@ def analyze(tasks: list[dict], annotations: list[dict], config: dict | None = No
                     axis_stats["disagree"] += 1
                     overall["disagree"] += 1
                     correction = verdict.get("correction")
-                    if correction:
+                    if correction in COUNTED_CORRECTIONS:
                         for bucket in (stats, overall, annot_stats, axis_stats):
                             bucket["corrected"] += 1
                     if correction in ("A", "B") and correction != pref:
@@ -236,6 +244,7 @@ def analyze(tasks: list[dict], annotations: list[dict], config: dict | None = No
         if kappa is not None:
             pair_kappas.append((len(common), kappa))
     total_common = sum(n for n, _ in pair_agreements)
+    kappa_items = sum(n for n, _ in pair_kappas)
     inter = {
         "annotators": annotators,
         "n_items": len(inter_labels),
@@ -243,10 +252,11 @@ def analyze(tasks: list[dict], annotations: list[dict], config: dict | None = No
         "percent_agreement": (
             sum(n * po for n, po in pair_agreements) / total_common if total_common else None
         ),
+        # 某一对标注员全都判「同意」时 pe=1，κ 无定义；这类配对只进一致率不进 κ，
+        # 所以单独报出 κ 实际用到的比较数，免得两个数看起来对不上
+        "n_kappa_comparisons": kappa_items,
         "kappa": (
-            sum(n * k for n, k in pair_kappas) / sum(n for n, _ in pair_kappas)
-            if pair_kappas
-            else None
+            sum(n * k for n, k in pair_kappas) / kappa_items if pair_kappas else None
         ),
         "n_pairs": len(pair_agreements),
     }

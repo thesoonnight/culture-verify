@@ -8,12 +8,15 @@
     python server.py import --name culture-v1 --zip culture-v1.zip
     python server.py list
     python server.py export --name culture-v1 --kind verdicts --out verdicts.csv
+    python server.py rm --name culture-v1 --dataset
+    python server.py rm --name culture-v1 --annotator lin
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import socket
 import sys
 import webbrowser
 from pathlib import Path
@@ -41,10 +44,34 @@ def _storage(args) -> Storage:
     return Storage(Path(args.data))
 
 
+def _port_busy(host: str, port: int) -> bool:
+    """Windows 上 SO_REUSEADDR 允许两个进程同时绑同一端口：不先探一下，
+    第二个 serve 会"启动成功"但一个请求都收不到（全被老进程接走）。"""
+    probe_host = "127.0.0.1" if host in ("0.0.0.0", "", "::", "*") else host
+    try:
+        with socket.create_connection((probe_host, port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
 def cmd_serve(args) -> int:
     storage = _storage(args)
     datasets = storage.list_datasets()
-    httpd = make_server(args.host, args.port, storage, WEB_DIR)
+    if _port_busy(args.host, args.port):
+        print(
+            f"端口 {args.port} 已经被占用 —— 很可能已经有一个 serve 在跑。\n"
+            f"  · 直接用浏览器打开 http://127.0.0.1:{args.port}/ 看是不是那个实例；\n"
+            f"  · 或者换一个端口：--port {args.port + 1}；\n"
+            f"  · 或者先停掉旧的 python 进程再启动。",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        httpd = make_server(args.host, args.port, storage, WEB_DIR)
+    except OSError as exc:
+        print(f"启动失败（端口 {args.port}）：{exc}", file=sys.stderr)
+        return 2
     print(f"Culture Verify · 数据目录 {storage.root}")
     print(f"数据集 {len(datasets)} 个：{', '.join(d['name'] for d in datasets) or '（空，可在页面里导入 zip）'}")
     url = f"http://{args.host}:{args.port}/"
@@ -133,6 +160,26 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_rm(args) -> int:
+    storage = _storage(args)
+    try:
+        if args.dataset:
+            storage.delete_dataset(args.name)
+            print(f"已删除数据集 {args.name}（含它的全部标注）")
+            return 0
+        deleted = storage.delete_annotations(args.name, args.annotator, args.task)
+    except KeyError as exc:
+        print(exc.args[0], file=sys.stderr)
+        return 2
+    scope = []
+    if args.annotator:
+        scope.append(f"标注员 {args.annotator}")
+    if args.task:
+        scope.append(f"题目 {args.task}")
+    print(f"已删除 {deleted} 条标注（{' / '.join(scope) or '全部标注员'}）")
+    return 0
+
+
 def cmd_stats(args) -> int:
     storage = _storage(args)
     tasks = storage.tasks(args.name)
@@ -179,6 +226,13 @@ def build_parser() -> argparse.ArgumentParser:
     exp.add_argument("--annotator", default=None)
     exp.add_argument("--out", default=None)
     exp.set_defaults(func=cmd_export)
+
+    rm = sub.add_parser("rm", parents=[common], help="删数据集或标注（之前只能手动进 sqlite）")
+    rm.add_argument("--name", required=True)
+    rm.add_argument("--dataset", action="store_true", help="整个数据集（含全部标注）")
+    rm.add_argument("--annotator", default=None, help="只删这位标注员的标注")
+    rm.add_argument("--task", default=None, help="只删这道题（配合 --annotator 更精确）")
+    rm.set_defaults(func=cmd_rm)
 
     stats = sub.add_parser("stats", parents=[common], help="打印一致性报告")
     stats.add_argument("--name", required=True)

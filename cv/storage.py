@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .validation import validate_annotation
+
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MEDIA_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif"}
 
@@ -112,6 +114,12 @@ class Storage:
     def task_ids(self, name: str) -> set[str]:
         return {t["id"] for t in self.tasks(name)}
 
+    def task(self, name: str, task_id: str) -> dict | None:
+        for item in self.tasks(name):
+            if item["id"] == task_id:
+                return item
+        return None
+
     def list_datasets(self) -> list[dict]:
         out: list[dict] = []
         for child in sorted(self.datasets_dir.iterdir()):
@@ -148,15 +156,16 @@ class Storage:
     def save_annotation(self, name: str, payload: dict) -> dict:
         if not self.exists(name):
             raise KeyError(f"数据集不存在：{name}")
-        annotator = str(payload.get("annotator") or "").strip()
         task_id = str(payload.get("task_id") or "").strip()
-        if not annotator:
-            raise ValueError("annotation.annotator 不能为空")
         if not task_id:
             raise ValueError("annotation.task_id 不能为空")
-        if task_id not in self.task_ids(name):
+        task = self.task(name, task_id)
+        if task is None:
             raise ValueError(f"题目不存在：{task_id}")
-        payload = {**payload, "annotator": annotator, "task_id": task_id}
+        # 入库前统一校验 + 归一化：缺字段、类型不对、判定项不存在都直接拒掉，
+        # 否则一条脏记录会让 /stats 与全部导出 500
+        payload = validate_annotation(payload, task)
+        annotator = payload["annotator"]
         updated = payload.get("updated_at") or utc_now()
         payload["updated_at"] = updated
         with self._db() as conn:
@@ -179,6 +188,23 @@ class Storage:
                 ),
             )
         return payload
+
+    def delete_annotations(
+        self, name: str, annotator: str | None = None, task_id: str | None = None
+    ) -> int:
+        """删标注。不传 task_id 就是清空某位标注员在这份数据集上的全部进度。"""
+        if not self.exists(name):
+            raise KeyError(f"数据集不存在：{name}")
+        sql = "DELETE FROM annotations WHERE dataset = ?"
+        args: list[Any] = [name]
+        if annotator:
+            sql += " AND annotator = ?"
+            args.append(annotator)
+        if task_id:
+            sql += " AND task_id = ?"
+            args.append(task_id)
+        with self._db() as conn:
+            return int(conn.execute(sql, args).rowcount)
 
     def annotations(self, name: str, annotator: str | None = None) -> list[dict]:
         if not self.exists(name):
@@ -205,17 +231,25 @@ class Storage:
     def staging_dir(self) -> Path:
         return Path(tempfile.mkdtemp(prefix="import-", dir=self.tmp_dir))
 
+    def temp_upload(self) -> Path:
+        """上传落盘用的临时文件（大 zip 不再整个读进内存）。"""
+        handle, path = tempfile.mkstemp(prefix="upload-", suffix=".zip", dir=self.tmp_dir)
+        os.close(handle)
+        return Path(path)
+
     def commit_dataset(self, name: str, staging: Path, overwrite: bool = False) -> None:
         final = self.dataset_dir(name)
         if final.exists():
             if not overwrite:
                 raise ValueError(f"数据集已存在：{name}（加 --overwrite 覆盖）")
-            self.delete_dataset(name)
+            self.delete_dataset(name, missing_ok=True)
         os.replace(staging, final)
         self._task_cache.pop(name, None)
 
-    def delete_dataset(self, name: str) -> None:
+    def delete_dataset(self, name: str, missing_ok: bool = False) -> None:
         final = self.dataset_dir(name)
+        if not self.exists(name) and not missing_ok:
+            raise KeyError(f"数据集不存在：{name}")
         if final.exists():
             shutil.rmtree(final)
         with self._db() as conn:

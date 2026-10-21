@@ -18,11 +18,13 @@ from .exporting import (
     to_csv,
     verdict_rows,
 )
-from .importer import ImportProblem, import_zip_bytes
+from .importer import MAX_ZIP_BYTES, ImportProblem, import_zip_path
 from .storage import Storage
+from .validation import AnnotationInvalid
 
 MAX_JSON_BYTES = 4 * 1024 * 1024
-MAX_IMPORT_BYTES = 1024 * 1024 * 1024
+MAX_IMPORT_BYTES = MAX_ZIP_BYTES
+UPLOAD_CHUNK = 1024 * 1024
 
 EXTRA_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -41,7 +43,7 @@ EXTRA_TYPES = {
 class Handler(BaseHTTPRequestHandler):
     storage: Storage
     web_dir: Path
-    server_version = "CultureVerify/0.2"
+    server_version = "CultureVerify/0.2.1"
     protocol_version = "HTTP/1.1"
 
     # ----------------------------------------------------------------- utils
@@ -76,6 +78,40 @@ class Handler(BaseHTTPRequestHandler):
         if length > limit:
             raise ValueError("请求体过大")
         return self.rfile.read(length)
+
+    def _body_to_file(self, limit: int) -> Path:
+        """把上传流式写到临时文件：GB 级 zip 不再整个读进内存。"""
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            raise ValueError("请求体为空")
+        if length > limit:
+            raise ValueError(f"上传超过上限（{limit // (1024 ** 3)} GB）")
+        path = self.storage.temp_upload()
+        remaining = length
+        try:
+            with path.open("wb") as handle:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(UPLOAD_CHUNK, remaining))
+                    if not chunk:
+                        raise ValueError("上传中断")
+                    handle.write(chunk)
+                    remaining -= len(chunk)
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
+        return path
+
+    def _require_json(self) -> None:
+        """只收 JSON：挡住跨站 text/plain 的简单请求（no-cors 也能发的那种）。"""
+        content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if content_type != "application/json":
+            raise ValueError(f"这个接口只收 application/json，收到 {content_type or '（空）'}")
+
+    def _send_not_modified(self, etag: str) -> None:
+        self.send_response(304)
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
 
     # ------------------------------------------------------------------ GET
     def do_GET(self) -> None:  # noqa: N802
@@ -173,11 +209,18 @@ class Handler(BaseHTTPRequestHandler):
         if not target.is_file():
             raise KeyError(f"图片不存在：{rel}")
         content_type = EXTRA_TYPES.get(target.suffix.lower()) or mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        stat = target.stat()
+        # 覆盖导入后同名图片常见，靠 ETag 让浏览器校验而不是傻缓存一小时
+        etag = f'"{int(stat.st_mtime)}-{stat.st_size}"'
+        if (self.headers.get("If-None-Match") or "").strip() == etag:
+            self._send_not_modified(etag)
+            return
         body = target.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "public, max-age=3600")
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -227,6 +270,8 @@ class Handler(BaseHTTPRequestHandler):
             raise KeyError(f"未知接口：{path}")
         except ImportProblem as exc:
             self._error(400, "导入失败", exc.messages)
+        except AnnotationInvalid as exc:
+            self._error(400, "标注格式不对", exc.messages)
         except KeyError as exc:
             self._error(404, str(exc).strip("'"))
         except ValueError as exc:
@@ -235,7 +280,39 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             self._error(500, "服务器内部错误")
 
+    # --------------------------------------------------------------- DELETE
+    def do_DELETE(self) -> None:  # noqa: N802
+        try:
+            parsed = urlparse(self.path)
+            path = unquote(parsed.path)
+            query = parse_qs(parsed.query)
+            parts = [p for p in path.split("/") if p]
+            if parts[:2] != ["api", "datasets"] or len(parts) < 3:
+                raise KeyError(f"未知接口：{path}")
+            name = parts[2]
+            if len(parts) == 3:
+                self.storage.delete_dataset(name)
+                self._json({"ok": True, "deleted_dataset": name})
+                return
+            if len(parts) == 4 and parts[3] == "annotations":
+                annotator = (query.get("annotator") or [None])[0]
+                task_id = (query.get("task_id") or [None])[0]
+                deleted = self.storage.delete_annotations(name, annotator, task_id)
+                self._json({"ok": True, "deleted": deleted})
+                return
+            raise KeyError(f"未知接口：{path}")
+        except KeyError as exc:
+            self._error(404, str(exc).strip("'"))
+        except ValueError as exc:
+            self._error(400, str(exc))
+        except OSError as exc:
+            self._error(500, f"删除失败：{exc}")
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+            self._error(500, "服务器内部错误")
+
     def _save_annotation(self, name: str) -> None:
+        self._require_json()
         raw = self._body(MAX_JSON_BYTES)
         try:
             data = json.loads(raw.decode("utf-8"))
@@ -253,11 +330,15 @@ class Handler(BaseHTTPRequestHandler):
         overwrite = (query.get("overwrite") or ["0"])[0] in ("1", "true", "yes")
         if not name:
             raise ValueError("缺少数据集名称 ?name=")
-        data = self._body(MAX_IMPORT_BYTES)
-        meta = import_zip_bytes(self.storage, name, data, title=title, overwrite=overwrite)
+        upload = self._body_to_file(MAX_IMPORT_BYTES)
+        try:
+            meta = import_zip_path(self.storage, name, upload, title=title, overwrite=overwrite)
+        finally:
+            upload.unlink(missing_ok=True)
         self._json({"ok": True, "dataset": meta})
 
     def _update_config(self, name: str) -> None:
+        self._require_json()
         raw = self._body(MAX_JSON_BYTES)
         try:
             data = json.loads(raw.decode("utf-8"))

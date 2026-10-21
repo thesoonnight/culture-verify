@@ -30,7 +30,7 @@ DEFAULT_CRITERIA = [
     {"id": "q2", "label": "细节真实度", "question": "局部结构、边缘与纹理的精细程度"},
 ]
 
-MAX_ZIP_BYTES = 1024 * 1024 * 1024  # 1 GB
+MAX_ZIP_BYTES = 4 * 1024 * 1024 * 1024  # 4 GB：走磁盘路径，不再整个读进内存
 
 TASK_NAMES = ("tasks.jsonl", "tasks.json", "tasks.csv")
 CONFIG_NAMES = ("config.json", "dataset.json")
@@ -176,9 +176,10 @@ def rows_to_tasks(rows: list[dict]) -> list[dict]:
                 task["criteria"] = []
                 task["scores"] = {"A": {}, "B": {}}
                 grouped[key] = task
-            if row.get("note"):
-                task["note"] = row["note"]
         task = grouped[key]
+        if row.get("note") and not task.get("note"):
+            # 长表里 note 常只写在某一行（不一定是第一行），取第一个非空的
+            task["note"] = row["note"]
         if mode == "pointwise":
             if not row.get("score"):
                 continue
@@ -211,17 +212,22 @@ def rows_to_tasks(rows: list[dict]) -> list[dict]:
 # normalizing / validating
 # --------------------------------------------------------------------------
 def _as_int(value: Any, field: str) -> int:
+    """严格取整：7.0 可以，0.9 报错（以前会悄悄截断成 0）。"""
     if isinstance(value, bool):
         return int(value)
     if isinstance(value, (int, float)):
-        return int(value)
-    text = str(value).strip()
-    if not text:
-        raise ValueError(f"{field} 不能为空")
-    try:
-        return int(float(text))
-    except ValueError as exc:
-        raise ValueError(f"{field} 不是数字：{value!r}") from exc
+        number = float(value)
+    else:
+        text = str(value).strip()
+        if not text:
+            raise ValueError(f"{field} 不能为空")
+        try:
+            number = float(text)
+        except ValueError as exc:
+            raise ValueError(f"{field} 不是数字：{value!r}") from exc
+    if number != int(number):
+        raise ValueError(f"{field} 必须是整数，收到 {value!r}")
+    return int(number)
 
 
 def normalize_task(raw: dict, index: int) -> dict:
@@ -285,6 +291,9 @@ def normalize_task(raw: dict, index: int) -> dict:
                 }
             )
         task["items"] = items
+        # 单图任务以前会把 CSV 里的 note 丢掉（pairwise 分支有处理，这里是漏的）
+        if raw.get("note"):
+            task["note"] = str(raw["note"]).strip()
         return task
 
     images = raw.get("images") or {}
@@ -560,12 +569,39 @@ def find_tasks_file(root: Path) -> Path | None:
     return candidates[0]
 
 
+def _extract_zip(archive: zipfile.ZipFile, tmp_root: Path) -> None:
+    for info in archive.infolist():
+        if info.is_dir() or info.filename.startswith("__MACOSX/"):
+            continue
+        target = (tmp_root / info.filename).resolve()
+        if tmp_root not in target.parents:
+            raise ImportProblem(f"zip 内含非法路径：{info.filename}")
+        archive.extract(info, tmp_root)
+
+
+def _import_extracted(storage: Storage, name: str, tmp_root: Path, title: str,
+                      overwrite: bool) -> dict:
+    tasks_file = find_tasks_file(tmp_root)
+    if not tasks_file:
+        raise ImportProblem("zip 里找不到 tasks.jsonl / tasks.json / tasks.csv")
+    config_file = tasks_file.parent / "config.json"
+    return import_dataset(
+        storage,
+        name,
+        tasks_file,
+        images_dir=tasks_file.parent,
+        config_path=config_file if config_file.is_file() else None,
+        title=title,
+        overwrite=overwrite,
+    )
+
+
 def import_zip_bytes(storage: Storage, name: str, data: bytes, title: str = "",
                      overwrite: bool = False) -> dict:
     if not valid_name(name):
         raise ImportProblem(f"非法数据集名称：{name!r}（只允许字母、数字、-、_）")
     if len(data) > MAX_ZIP_BYTES:
-        raise ImportProblem("zip 超过 1 GB")
+        raise ImportProblem(f"zip 超过 {MAX_ZIP_BYTES // (1024 ** 3)} GB")
     if storage.exists(name) and not overwrite:
         raise ImportProblem(f"数据集已存在：{name}（加 --overwrite 覆盖）")
     try:
@@ -575,31 +611,33 @@ def import_zip_bytes(storage: Storage, name: str, data: bytes, title: str = "",
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp).resolve()
-        for info in archive.infolist():
-            if info.is_dir() or info.filename.startswith("__MACOSX/"):
-                continue
-            target = (tmp_root / info.filename).resolve()
-            if tmp_root not in target.parents:
-                raise ImportProblem(f"zip 内含非法路径：{info.filename}")
-            archive.extract(info, tmp_root)
-        tasks_file = find_tasks_file(tmp_root)
-        if not tasks_file:
-            raise ImportProblem("zip 里找不到 tasks.jsonl / tasks.json / tasks.csv")
-        config_file = tasks_file.parent / "config.json"
-        return import_dataset(
-            storage,
-            name,
-            tasks_file,
-            images_dir=tasks_file.parent,
-            config_path=config_file if config_file.is_file() else None,
-            title=title,
-            overwrite=overwrite,
-        )
+        _extract_zip(archive, tmp_root)
+        return _import_extracted(storage, name, tmp_root, title, overwrite)
+
+
+def import_zip_path(storage: Storage, name: str, path: str | Path, title: str = "",
+                    overwrite: bool = False) -> dict:
+    """从磁盘上的 zip 导入：zip 本体不进内存，几个 GB 的图包也能吃。"""
+    path = Path(path)
+    if not valid_name(name):
+        raise ImportProblem(f"非法数据集名称：{name!r}（只允许字母、数字、-、_）")
+    if not path.is_file():
+        raise ImportProblem(f"找不到 zip：{path}")
+    if path.stat().st_size > MAX_ZIP_BYTES:
+        raise ImportProblem(f"zip 超过 {MAX_ZIP_BYTES // (1024 ** 3)} GB")
+    if storage.exists(name) and not overwrite:
+        raise ImportProblem(f"数据集已存在：{name}（加 --overwrite 覆盖）")
+    try:
+        archive = zipfile.ZipFile(path)
+    except zipfile.BadZipFile as exc:
+        raise ImportProblem("不是有效的 zip 文件") from exc
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_root = Path(tmp).resolve()
+        _extract_zip(archive, tmp_root)
+        return _import_extracted(storage, name, tmp_root, title, overwrite)
 
 
 def import_zip_file(storage: Storage, name: str, path: str | Path, title: str = "",
                     overwrite: bool = False) -> dict:
-    path = Path(path)
-    if not path.is_file():
-        raise ImportProblem(f"找不到 zip：{path}")
-    return import_zip_bytes(storage, name, path.read_bytes(), title=title, overwrite=overwrite)
+    return import_zip_path(storage, name, path, title=title, overwrite=overwrite)

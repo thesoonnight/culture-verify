@@ -31,6 +31,10 @@ VERDICT_COLUMNS = [
     "model_a",
     "model_b",
     "human_verdict",
+    # 追加列（放在最后，老脚本按列名取不会受影响）
+    "prompt",
+    "shown_as",
+    "region",
 ]
 
 CONSISTENCY_COLUMNS = [
@@ -48,6 +52,7 @@ CONSISTENCY_COLUMNS = [
     "verified_pass_rate",
     "flipped",
     "kappa",
+    "kappa_n",
     "n_pairs",
     "n_items",
     "avg_duration_ms",
@@ -67,15 +72,24 @@ def _labels(tasks: list[dict], config: dict | None) -> dict[str, str]:
     return labels
 
 
+def _blank(value):
+    """保留 0 / False 这类"有值但假"的取值：`value or ""` 会把修正值 0 吃掉。"""
+    return "" if value is None or value == "" else value
+
+
 def verdict_rows(tasks: list[dict], annotations: list[dict], config: dict | None = None) -> list[dict]:
     labels = _labels(tasks, config)
     task_by_id = {t["id"]: t for t in tasks}
     rows: list[dict] = []
     for ann in annotations:
+        if not isinstance(ann, dict):
+            continue
         task = task_by_id.get(ann.get("task_id"))
         if not task:
             continue
-        verdicts = ann.get("verdicts") or {}
+        verdicts = ann.get("verdicts")
+        if not isinstance(verdicts, dict):
+            verdicts = {}
         meta = task.get("meta") or {}
         status = ann.get("status") or ""
         finished = ann.get("finished_at") or (
@@ -87,17 +101,20 @@ def verdict_rows(tasks: list[dict], annotations: list[dict], config: dict | None
             "annotator": ann.get("annotator"),
             "axis": task.get("axis", ""),
             "lang": task.get("lang", ""),
-            "overall": ann.get("overall") or "",
-            "note": ann.get("note") or "",
-            "duration_ms": ann.get("duration_ms") or "",
+            "overall": _blank(ann.get("overall")),
+            "note": _blank(ann.get("note")),
+            "duration_ms": _blank(ann.get("duration_ms")),
             "finished_at": finished or "",
             "status": status,
-            "started_at": ann.get("started_at") or "",
+            "started_at": _blank(ann.get("started_at")),
+            "prompt": task.get("prompt", ""),
+            "shown_as": _blank(ann.get("shown_as")),
+            "region": task.get("region", ""),
         }
         if task.get("mode") == "pointwise":
             for item in task.get("items", []):
                 verdict = verdicts.get(item["dim"])
-                if not verdict:
+                if not isinstance(verdict, dict):
                     continue
                 truth = _point_truth(item, verdict)
                 rows.append(
@@ -112,7 +129,7 @@ def verdict_rows(tasks: list[dict], annotations: list[dict], config: dict | None
                         "model_score_b": "",
                         "model_pref": "",
                         "human_agree": 1 if verdict.get("agree") else 0,
-                        "human_correction": verdict.get("correction") or "",
+                        "human_correction": _blank(verdict.get("correction")),
                         "human_truth": "" if truth is None else truth,
                         "human_verdict": "同意" if verdict.get("agree") else "不同意",
                     }
@@ -122,7 +139,7 @@ def verdict_rows(tasks: list[dict], annotations: list[dict], config: dict | None
             model_b = meta.get("model_B", "")
             for crit in task.get("criteria", []):
                 verdict = verdicts.get(crit["id"])
-                if not verdict:
+                if not isinstance(verdict, dict):
                     continue
                 pref = _model_pref(task, crit["id"])
                 truth = _pair_truth(pref, verdict)
@@ -138,7 +155,7 @@ def verdict_rows(tasks: list[dict], annotations: list[dict], config: dict | None
                         "model_score_b": task["scores"]["B"][crit["id"]],
                         "model_pref": pref,
                         "human_agree": 1 if verdict.get("agree") else 0,
-                        "human_correction": verdict.get("correction") or "",
+                        "human_correction": _blank(verdict.get("correction")),
                         "human_truth": truth or "",
                         "human_verdict": "同意" if verdict.get("agree") else "不同意",
                     }
@@ -175,12 +192,18 @@ def consistency_rows(summary: dict) -> list[dict]:
         rows.append(row)
 
     overall = summary.get("overall") or {}
-    add("overall", "all", "全部判定", overall, {"kappa": (summary.get("inter_annotator") or {}).get("kappa")})
+    inter = summary.get("inter_annotator") or {}
+    add(
+        "overall",
+        "all",
+        "全部判定",
+        overall,
+        {"kappa": inter.get("kappa"), "kappa_n": inter.get("n_kappa_comparisons")},
+    )
     for item in summary.get("dimensions", []):
         add("evaluator_vs_human", item.get("id", ""), item.get("label", ""), item)
     for item in summary.get("criteria", []):
         add("evaluator_vs_human", item.get("id", ""), item.get("label", ""), item)
-    inter = summary.get("inter_annotator") or {}
     rows.append(
         {
             "section": "inter_annotator",
@@ -189,6 +212,7 @@ def consistency_rows(summary: dict) -> list[dict]:
             "n": inter.get("n_comparisons"),
             "agreement_rate": inter.get("percent_agreement"),
             "kappa": inter.get("kappa"),
+            "kappa_n": inter.get("n_kappa_comparisons"),
             "n_pairs": inter.get("n_pairs"),
             "n_items": inter.get("n_items"),
         }
